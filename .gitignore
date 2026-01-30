@@ -1,0 +1,13 @@
+*.lance
+*.parquet
+*.npy
+*.pt
+*.onnx
+data/*
+!data/.gitkeep
+__pycache__/
+*.pyc
+.env
+.venv
+.idea
+.vscode

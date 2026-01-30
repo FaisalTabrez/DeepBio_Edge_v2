@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "deepbio-edge"
+version = "0.1.0"
+description = "DeepBio Edge Component"
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+duckdb = "*"
+fs-s3fs = "*"
+polars = "*"
+pyarrow = "*"
+lancedb = "*"
+torch = "*"
+transformers = "*"
+onnxruntime = "*"
+biopython = "*"
+pyyaml = "*"
+pydantic = "*"
+streamlit = "*"
+plotly = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,12 @@
+storage:
+  base_path: ./data
+  db_name: "deepbio_index"
+  raw_data_dir: "raw"
+
+data:
+  obis_s3_url: "s3://obis-open-data/occurrence/*.parquet"
+  min_depth: 200
+
+model:
+  name: "zhihan1996/DNABERT-2-117M"
+  quantized: true

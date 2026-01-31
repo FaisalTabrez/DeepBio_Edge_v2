@@ -8,7 +8,8 @@ data:
   min_depth: 200
 
 model:
-  name: "zhihan1996/DNABERT-2-117M"
+  # Using Nucleotide Transformer v2 (50M) - Stable on Windows CPU
+  name: "InstaDeepAI/nucleotide-transformer-v2-50m-multi-species"
   quantized: true
 
 classification:

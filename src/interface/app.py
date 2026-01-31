@@ -10,6 +10,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 import numpy as np
+from io import StringIO
+from Bio import SeqIO
 
 # Add project root to path
 project_root = Path(__file__).resolve().parents[2]
@@ -78,136 +80,164 @@ def main():
     
     # --- TAB 1: ANALYSIS ---
     with tabs[0]:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-             seq_input = st.text_area("Input DNA Sequence", value=DUMMY_SEQ, height=100)
-             
-        with col2:
-             st.write("##") # Spacer
-             analyze_btn = st.button("Analyze Sequence", type="primary", use_container_width=True)
+        st.header("🧬 Sequence Analysis")
+        
+        # Get cached resources
+        embedder = get_embedder()
+        predictor = get_predictor()
+        
+        # --- INPUT SECTION ---
+        input_method = st.radio("Input Method:", ["Manual Entry", "FASTA File Upload"], horizontal=True)
+        
+        sequences_to_analyze = []  # List of tuples: (id, sequence_string)
+        
+        if input_method == "Manual Entry":
+            # Dummy sequence for demo (Deep Sea Isopod partial COI)
+            dummy_seq = "AACTTTATATTTTATTTTTGGTGCTTGAGCCGGCATAGTAGGCACTTCTTTAAGAATTCTAATTCGAGCTGAATTAGGACACCCGGGAGCTTTAATTGGAGATGATCAAATTTATAATACTATT"
+            user_seq = st.text_area("Enter DNA Sequence:", value=dummy_seq, height=150)
+            if user_seq:
+                sequences_to_analyze = [("Manual_Input", user_seq.strip())]
+                
+        else:  # FASTA Upload
+            uploaded_file = st.file_uploader("Upload .fasta file", type=["fasta", "fa"])
+            if uploaded_file:
+                # Parse FASTA from memory
+                stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+                for record in SeqIO.parse(stringio, "fasta"):
+                    sequences_to_analyze.append((record.id, str(record.seq)))
+                st.info(f"Loaded {len(sequences_to_analyze)} sequences from file.")
 
-        if analyze_btn:
-             if not seq_input:
-                 st.error("Please enter a sequence.")
-             else:
-                 with st.spinner("Processing on Edge Device (CPU)..."):
-                     # 1. Embed
-                     embedder = get_embedder()
-                     try:
-                         query_vecs = embedder.embed([seq_input])
-                         if not query_vecs:
-                             st.error("Embedding failed.")
-                             return
-                         query_vec = query_vecs[0]
-                     except Exception as e:
-                         st.error(f"Embedding error: {e}")
-                         return
-                     
-                     # 2. Search
-                     results = db.search(query_vec, limit=k_neighbors)
-                     
-                     if not results:
-                         st.warning("No matches found in database.")
-                         return
-                         
-                     top_match = results[0]
-                     # LanceDB returns L2 distance by default (0 is identical)
-                     # Careful with interpretation: 
-                     # If vectors are normalized, Cosine Similarity = 1 - (L2^2 / 2).
-                     # Let's assume L2 for thresholds. Small distance = close.
-                     distance = top_match.get('_distance', 1.0)
-                     
-                     # --- DECISION LOGIC ---
-                     # We use 'species_threshold' as the cutoff for "Unknown".
-                     # Actually, distance < threshold means MATCH.
-                     # So if dist = 0.1 and thresh = 0.5 -> MATCH.
-                     
-                     # Wait, user prompt said: "Exact Match: If distance > Species Threshold -> Show Green"
-                     # usually distance is 0 for match. Similarity is 1.
-                     # "If distance < Species Threshold" (Small dist) -> Match.
-                     # I will assume standard distance logic: Small = Match.
-                     
-                     # Novelty Logic:
-                     # If distance > threshold -> Novel.
-                     
-                     # Let's align with user request logic but inverted for Distance:
-                     # If distance < (2.0 - Species Threshold)? No, let's stick to Distance.
-                     # If distance < 0.2 (arbitrary low) -> Match.
-                     
-                     # User Defaults: Species Threshold 0.97. This looks like Similarity.
-                     # If user thinks in Similarity (0 to 1), then Distance = 1 - Similarity (roughly).
-                     # So Threshold 0.97 Similarity ~= 0.03 Distance.
-                     # Let's map user slider (0.97) to distance threshold (0.03).
-                     
-                     # Actually, simpler: Let's assume the slider IS the similarity threshold.
-                     # So we convert distance to similarity? 
-                     # Or we just interpret the slider for Demo purposes.
-                     # Let's use specific Logic:
-                     # If distance < 0.1 : Match
-                     # If distance > 0.1 : Novel
-                     
-                     # Let's use the Slider value directly as Distance Threshold for clarity in dashboard?
-                     # No, User set default 0.97. That definitely implies Similarity.
-                     # I will convert for the demo: similarity = 1 / (1 + distance) is a common proxy or just (1-distance).
-                     # Let's display Distance and interpret the slider as "Similarity".
-                     
-                     similarity = 1.0 - (distance / 2.0) # Approx for L2 on normalized vectors
-                     
-                     st.divider()
-                     st.subheader("Result Analysis")
-                     
-                     col_m1, col_m2, col_m3 = st.columns(3)
-                     col_m1.metric("Top Match", top_match['scientific_name'])
-                     col_m2.metric("Distance", f"{distance:.4f}")
-                     col_m3.metric("Similarity Score", f"{similarity:.4f}")
+        # --- ANALYSIS BUTTON ---
+        if st.button("Analyze Sequence(s)", type="primary"):
+            if not sequences_to_analyze:
+                st.error("Please enter a sequence or upload a file.")
+            else:
+                with st.spinner(f"Analyzing {len(sequences_to_analyze)} sequences..."):
+                    
+                    # 1. Prepare Data
+                    ids = [x[0] for x in sequences_to_analyze]
+                    seqs = [x[1] for x in sequences_to_analyze]
+                    
+                    # 2. Embed Batch
+                    vectors = embedder.embed_batch(seqs)
+                    
+                    # 3. Process Results
+                    results_data = []
+                    
+                    for i, vector in enumerate(vectors):
+                        # Search DB
+                        neighbors = db.search(vector.tolist(), limit=k_neighbors)
+                        
+                        if not neighbors:
+                            st.error("Database is empty or search failed.")
+                            break
+                            
+                        best_match = neighbors[0]
+                        dist = best_match.get('_distance', 999)
+                        best_tax = best_match.get('scientific_name', 'Unknown')
+                        
+                        # Convert distance to similarity (approx)
+                        similarity = 1.0 - (dist / 2.0)
+                        
+                        # Classification
+                        status = "Unknown"
+                        if similarity >= species_threshold:
+                            status = "✅ Known Species"
+                        elif similarity >= novelty_threshold:
+                            status = "⚠️ Ambiguous"
+                        else:
+                            status = "🔥 Potential Novel Taxa"
+                            
+                        results_data.append({
+                            "Sequence ID": ids[i],
+                            "Status": status,
+                            "Distance": round(dist, 4),
+                            "Similarity": round(similarity, 4),
+                            "Best Match": best_tax,
+                            "Neighbors": neighbors  # Keep for detailed view
+                        })
 
-                     if similarity >= species_threshold:
-                         st.success(f"✅ **Confirmed Species Match**: {top_match['scientific_name']}")
-                         st.balloons()
-                     else:
-                         st.warning(f"⚠️ **Potential Novel Taxa Detected** (Similarity < {species_threshold})")
-                         
-                         st.write("### 🧬 Consensus Classification")
-                         # 3. Consensus
-                         try:
-                             predictor = get_predictor()
-                             lineage = predictor.predict_lineage(results)
-                             
-                             # Visual Badges
-                             badge_cols = st.columns(len(lineage) if lineage else 1)
-                             if lineage:
-                                 for i, (rank, info) in enumerate(lineage.items()):
-                                     status = info['status']
-                                     text = f"{rank}: **{info['value']}**"
-                                     if status == "Confirmed":
-                                         badge_cols[i].success(text)
-                                     else:
-                                         badge_cols[i].warning(text)
-                             else:
-                                 st.info("No lineage info available for consensus.")
-                                 
-                         except Exception as e:
-                             st.error(f"Classification error: {e}")
-
-                         # 4. Evidence (Pie Chart)
-                         st.write("### 🗳️ Neighbor Voting Evidence")
-                         families = []
-                         for r in results:
-                             # Try extracting Family
-                             fam = r.get('family') or r.get('Family') or "Unknown"
-                             # Parsing fallback
-                             if fam == "Unknown" and 'taxonomy' in r:
-                                 parts = r['taxonomy'].split(';')
-                                 if len(parts) > 4: fam = parts[4].strip()
-                             families.append(fam)
-                             
-                         df_fam = pd.DataFrame(families, columns=['Family']).value_counts().reset_index()
-                         
-                         fig = px.pie(df_fam, values='count', names='Family', title=f"Top {k_neighbors} Neighbors Distribution")
-                         st.plotly_chart(fig, use_container_width=True)
-                     
-                     with st.expander("View Raw Neighbor Data"):
-                         st.dataframe(pd.DataFrame(results))
+                    # 4. DISPLAY RESULTS
+                    
+                    # If Single Sequence (Manual Mode) - Show Detailed Report
+                    if len(sequences_to_analyze) == 1:
+                        res = results_data[0]
+                        
+                        st.divider()
+                        st.subheader("Result Analysis")
+                        
+                        col_m1, col_m2, col_m3 = st.columns(3)
+                        col_m1.metric("Top Match", res['Best Match'])
+                        col_m2.metric("Distance", f"{res['Distance']:.4f}")
+                        col_m3.metric("Similarity Score", f"{res['Similarity']:.4f}")
+                        
+                        # Result Banner
+                        if "Known" in res['Status']:
+                            st.success(f"{res['Status']}: {res['Best Match']}")
+                            st.balloons()
+                        elif "Novel" in res['Status']:
+                            st.warning(f"{res['Status']} (Similarity < {novelty_threshold})")
+                            
+                            # Consensus Logic
+                            st.write("### 🧬 Consensus Classification")
+                            try:
+                                lineage = predictor.predict_lineage(res['Neighbors'])
+                                
+                                # Visual Badges
+                                badge_cols = st.columns(len(lineage) if lineage else 1)
+                                if lineage:
+                                    for j, (rank, info) in enumerate(lineage.items()):
+                                        status_val = info['status']
+                                        text = f"{rank}: **{info['value']}**"
+                                        if status_val == "Confirmed":
+                                            badge_cols[j].success(text)
+                                        else:
+                                            badge_cols[j].warning(text)
+                                else:
+                                    st.info("No lineage info available for consensus.")
+                                    
+                            except Exception as e:
+                                st.error(f"Classification error: {e}")
+                            
+                            # Evidence (Pie Chart)
+                            st.write("### 🗳️ Neighbor Voting Evidence")
+                            families = []
+                            for r in res['Neighbors']:
+                                fam = r.get('family') or r.get('Family') or "Unknown"
+                                if fam == "Unknown" and 'taxonomy' in r:
+                                    parts = r['taxonomy'].split(';')
+                                    if len(parts) > 4: fam = parts[4].strip()
+                                families.append(fam)
+                                
+                            df_fam = pd.DataFrame(families, columns=['Family']).value_counts().reset_index()
+                            fig = px.pie(df_fam, values='count', names='Family', title=f"Top {k_neighbors} Neighbors Distribution")
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info(f"{res['Status']} (Similarity={res['Similarity']:.4f})")
+                        
+                        with st.expander("View Raw Neighbor Data"):
+                            st.dataframe(pd.DataFrame(res['Neighbors']))
+                        
+                    # If Batch Mode (File Upload) - Show Summary Table
+                    else:
+                        st.subheader("Batch Analysis Results")
+                        df_res = pd.DataFrame(results_data).drop(columns=["Neighbors"])
+                        
+                        # Highlighting
+                        def highlight_novel(val):
+                            if 'Novel' in str(val):
+                                return 'background-color: #ffcccc'
+                            elif 'Known' in str(val):
+                                return 'background-color: #ccffcc'
+                            else:
+                                return 'background-color: #ffffcc'
+                        
+                        styled_df = df_res.style.applymap(highlight_novel, subset=['Status'])
+                        st.dataframe(styled_df, use_container_width=True)
+                        
+                        # Download Button
+                        csv = df_res.to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 Download Results (CSV)", csv, "analysis_results.csv", "text/csv")
                          
     # --- TAB 2: 3D MAP ---
     with tabs[1]:
@@ -244,15 +274,20 @@ def main():
                     df_pca['Species'] = labels
                     df_pca['Type'] = types
                     
+                    # Create numeric size column (Background=5, Target=20)
+                    df_pca['size'] = df_pca['Type'].map({'Background': 5, 'Target': 20})
+                    df_pca['size'] = pd.to_numeric(df_pca['size'])
+                    
                     # 4. Plot
                     fig = px.scatter_3d(
                         df_pca, x='x', y='y', z='z',
                         color='Type', 
                         hover_name='Species',
-                        size='Type',
+                        size='size',
                         size_max=15, 
                         color_discrete_map={"Background": "grey", "Target": "red"},
-                        opacity=0.7
+                        opacity=0.7,
+                        title="Biodiversity Vector Space (3D PCA)"
                     )
                     st.plotly_chart(fig, use_container_width=True)
 

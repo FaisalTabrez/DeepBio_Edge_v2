@@ -10,3 +10,6 @@ data:
 model:
   name: "zhihan1996/DNABERT-2-117M"
   quantized: true
+
+classification:
+  k_neighbors_voting: 10
